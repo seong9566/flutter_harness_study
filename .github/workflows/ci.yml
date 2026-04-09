@@ -75,7 +75,7 @@ jobs:
             ! -name '*.freezed.dart' \
             ! -name '*.gen.dart' \
             | sort \
-            | sed "s|lib/|import 'package:s_portal_mobile/|;s|$$|';|" \
+            | sed "s|lib/|import 'package:$(grep '^name:' pubspec.yaml | awk '{print $2}')/|;s|$|';|" \
             > test/coverage_helper_test.dart
           echo "void main() {}" >> test/coverage_helper_test.dart
 

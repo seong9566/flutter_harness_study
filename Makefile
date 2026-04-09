@@ -1,7 +1,7 @@
 .PHONY: test coverage coverage-all coverage-open analyze check clean setup hooks verify-docs
 
 MIN_COVERAGE := 90
-COVERAGE_TITLE := s_portal_mobile Coverage
+COVERAGE_TITLE := Flutter App Coverage
 LCOV_RAW := coverage/lcov.info
 LCOV_FILTERED := coverage/lcov_filtered.info
 COVERAGE_HTML := coverage/html
@@ -37,7 +37,7 @@ coverage-all:
 		! -name '*.freezed.dart' \
 		! -name '*.gen.dart' \
 		| sort \
-		| sed "s|lib/|import 'package:s_portal_mobile/|;s|$$|';|" \
+		| sed "s|lib/|import 'package:$$(grep '^name:' pubspec.yaml | awk '{print $$2}')/|;s|$$|';|" \
 		> $(COVERAGE_HELPER)
 	@echo "void main() {}" >> $(COVERAGE_HELPER)
 	@flutter test --coverage --no-test-assets
