@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=$(jq -r \".tool_input.file_path\" <<< \"$(cat)\"); BLOCKED=\"pubspec.yaml .env .env.dev .env.prod .env.local firebase_options.dart\"; for p in $BLOCKED; do if echo \"$FILE\" | grep -q \"$p\"; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"보호된 파일입니다. 사람에게 요청하세요: $p\\\"}\" && exit 2; fi; done; exit 0'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'CMD=$(jq -r \".tool_input.command\" <<< \"$(cat)\"); for p in \"rm -rf /\" \"rm -rf ~\" \"--force\" \"push.*--force\" \"force-push\" \"DROP TABLE\" \"TRUNCATE\"; do if echo \"$CMD\" | grep -qiE \"$p\"; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"위험한 명령어가 차단되었습니다: $p\\\"}\" && exit 2; fi; done; exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'CMD=$(jq -r \".tool_input.command\" <<< \"$(cat)\"); if echo \"$CMD\" | grep -qiE \"flutter pub add|dart pub add\"; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"패키지 추가는 금지되어 있습니다. 사람에게 제안하세요.\\\"}\" && exit 2; fi; exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'CMD=$(jq -r \".tool_input.command\" <<< \"$(cat)\"); if echo \"$CMD\" | grep -qE \"^git commit\"; then cd $CLAUDE_PROJECT_DIR; echo \"=== flutter analyze ===\"; flutter analyze --no-pub 2>&1 | tail -5; if [ $? -ne 0 ]; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"정적 분석 실패. 오류를 수정한 후 커밋하세요.\\\"}\" && exit 2; fi; echo \"=== flutter test ===\"; flutter test 2>&1 | tail -10; if [ $? -ne 0 ]; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"테스트 실패. 모든 테스트를 통과시킨 후 커밋하세요.\\\"}\" && exit 2; fi; fi; exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'CMD=$(jq -r \".tool_input.command\" <<< \"$(cat)\"); if echo \"$CMD\" | grep -qE \"^git commit\"; then MSG=$(echo \"$CMD\" | grep -oP \"(?<=-m\\s[\\'\\\"]).+?(?=[\\'\\\"]\"); if [ -n \"$MSG\" ]; then if ! echo \"$MSG\" | grep -qE \"^(feat|fix|refactor|docs|test|chore)\\(.+\\):\\s.+\"; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"커밋 메시지 형식 오류. type(scope): 설명 형식을 사용하세요. 예: fix(card): 카드 목록 정렬 오류 수정\\\"}\" && exit 2; fi; fi; fi; exit 0'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=$(jq -r \".tool_input.file_path\" <<< \"$(cat)\"); if echo \"$FILE\" | grep -qE \"\\.dart$\"; then dart format \"$FILE\" 2>/dev/null; fi; exit 0'"
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'FILE=$(jq -r \".tool_input.file_path\" <<< \"$(cat)\"); if echo \"$FILE\" | grep -qE \"\\.dart$\" && ! echo \"$FILE\" | grep -qE \"\\.(g|freezed|gen)\\.dart$\"; then NEEDS_BUILD=false; if head -20 \"$FILE\" 2>/dev/null | grep -qE \"part\\s.*\\.(g|freezed)\\.dart\"; then NEEDS_BUILD=true; fi; if [ \"$NEEDS_BUILD\" = true ]; then cd $CLAUDE_PROJECT_DIR && dart run build_runner build --delete-conflicting-outputs 2>&1 | tail -3; fi; fi; exit 0'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'INPUT=$(cat); if [ \"$(echo \"$INPUT\" | jq -r \".stop_hook_active\")\" = \"true\" ]; then exit 0; fi; cd $CLAUDE_PROJECT_DIR && flutter test 2>&1 | tail -10; if [ $? -ne 0 ]; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"테스트 실패. 모든 테스트를 통과시킨 후 종료하세요.\\\"}\" && exit 2; fi; exit 0'"
+          }
+        ]
+      }
+    ]
+  }
+}

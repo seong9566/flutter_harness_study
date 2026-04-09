@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.x'
+  MIN_COVERAGE: 90
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Verify generated files are committed
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "❌ 생성 파일이 커밋에 포함되지 않았습니다."
+            echo "dart run build_runner build 후 생성된 파일을 커밋하세요."
+            git diff --name-only
+            exit 1
+          fi
+
+      - name: Dart format check
+        run: dart format --set-exit-if-changed .
+
+      - name: Flutter analyze
+        run: flutter analyze --no-pub
+
+  test:
+    name: Test + Coverage
+    runs-on: ubuntu-latest
+    needs: analyze
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Install lcov
+        run: sudo apt-get install -y lcov
+
+      - name: Generate coverage helper
+        run: |
+          find lib -name '*.dart' \
+            ! -name '*.g.dart' \
+            ! -name '*.freezed.dart' \
+            ! -name '*.gen.dart' \
+            | sort \
+            | sed "s|lib/|import 'package:s_portal_mobile/|;s|$$|';|" \
+            > test/coverage_helper_test.dart
+          echo "void main() {}" >> test/coverage_helper_test.dart
+
+      - name: Run tests with coverage
+        run: flutter test --coverage --no-test-assets
+
+      - name: Filter coverage
+        run: |
+          lcov --remove coverage/lcov.info \
+            '*.g.dart' '*.freezed.dart' '*.gen.dart' \
+            '*/l10n/*.dart' '*/router/*.dart' \
+            --ignore-errors unused \
+            -o coverage/lcov_filtered.info
+
+      - name: Check coverage threshold
+        run: |
+          RATE=$(lcov --summary coverage/lcov_filtered.info 2>&1 \
+            | grep 'lines' | awk '{print $2}' | cut -d'%' -f1)
+          echo "Coverage: ${RATE}% (minimum: ${{ env.MIN_COVERAGE }}%)"
+          if [ $(echo "${RATE} < ${{ env.MIN_COVERAGE }}" | bc) -eq 1 ]; then
+            echo "❌ 커버리지 미달: ${RATE}% < ${{ env.MIN_COVERAGE }}%"
+            exit 1
+          else
+            echo "✅ 커버리지 통과: ${RATE}%"
+          fi
+
+      - name: Clean up helper
+        if: always()
+        run: rm -f test/coverage_helper_test.dart
+
+  commit-lint:
+    name: Commit Message Lint
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit messages
+        run: |
+          ERRORS=0
+          git log origin/${{ github.base_ref }}..HEAD --pretty=format:"%s" | while read msg; do
+            if ! echo "$msg" | grep -qE "^(feat|fix|refactor|docs|test|style|perf|build|ci|chore|revert)(\(.+\))?: .+"; then
+              echo "❌ 형식 오류: $msg"
+              echo "   올바른 형식: type(scope): 설명"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+          if [ "$ERRORS" -gt 0 ]; then
+            exit 1
+          fi
+          echo "✅ 커밋 메시지 형식 통과"

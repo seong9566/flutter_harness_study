@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# 문서 동기화 검증 스크립트
+# 실행: bash scripts/verify-docs.sh
+# 또는: make verify-docs
+
+set -e
+
+echo "══════════════════════════════════"
+echo "  문서 동기화 검증"
+echo "══════════════════════════════════"
+echo ""
+
+ERRORS=0
+WARNINGS=0
+
+# ─── 1. CLAUDE.md에서 참조하는 docs/ 파일 존재 여부 ────
+
+echo "🔍 [1/5] CLAUDE.md 참조 문서 존재 확인..."
+
+if [ -f "CLAUDE.md" ]; then
+  grep -oE 'docs/[a-zA-Z0-9_/-]+\.md' CLAUDE.md | sort -u | while read doc; do
+    if [ ! -f "$doc" ]; then
+      echo "   ❌ CLAUDE.md가 참조하지만 없는 파일: $doc"
+      ERRORS=$((ERRORS + 1))
+    fi
+  done
+  echo "   완료"
+else
+  echo "   ⚠️ CLAUDE.md가 없습니다"
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ─── 2. directory-structure.md와 실제 feature 구조 비교 ────
+
+echo "🔍 [2/5] feature 디렉토리 구조 검증..."
+
+if [ -d "lib/features" ]; then
+  for feature_dir in lib/features/*/; do
+    feature=$(basename "$feature_dir")
+
+    # 3레이어 폴더 존재 확인
+    for layer in presentation domain data; do
+      if [ ! -d "$feature_dir$layer" ]; then
+        echo "   ❌ lib/features/$feature/$layer/ 폴더 없음"
+        ERRORS=$((ERRORS + 1))
+      fi
+    done
+  done
+  echo "   완료"
+else
+  echo "   ⚠️ lib/features/ 디렉토리가 없습니다"
+  WARNINGS=$((WARNINGS + 1))
+fi
+
+# ─── 3. onboarding.md의 명령어가 실제로 동작하는지 확인 ────
+
+echo "🔍 [3/5] Makefile 타겟 존재 확인..."
+
+if [ -f "docs/onboarding.md" ] && [ -f "Makefile" ]; then
+  for target in test coverage analyze check clean setup hooks; do
+    if ! grep -q "^${target}:" Makefile; then
+      echo "   ⚠️ onboarding.md에 언급된 make $target 타겟이 Makefile에 없음"
+      WARNINGS=$((WARNINGS + 1))
+    fi
+  done
+  echo "   완료"
+else
+  echo "   ⚠️ docs/onboarding.md 또는 Makefile이 없습니다"
+  WARNINGS=$((WARNINGS + 1))
+fi
+
+# ─── 4. patterns.md의 import 경로가 실제 존재하는지 확인 ────
+
+echo "🔍 [4/5] docs 내 파일 경로 참조 검증..."
+
+for doc in docs/architecture/*.md docs/conventions/*.md; do
+  if [ -f "$doc" ]; then
+    # lib/ 경로 참조 추출
+    grep -oE 'lib/[a-zA-Z0-9_/]+\.dart' "$doc" 2>/dev/null | sort -u | while read filepath; do
+      # 와일드카드 패턴이면 스킵 (예: lib/features/*/presentation/)
+      if echo "$filepath" | grep -q '\*'; then
+        continue
+      fi
+      if [ ! -f "$filepath" ]; then
+        echo "   ⚠️ $(basename $doc)가 참조하지만 없는 파일: $filepath"
+        WARNINGS=$((WARNINGS + 1))
+      fi
+    done
+  fi
+done
+echo "   완료"
+
+# ─── 5. docs/ 간 상호 참조 검증 ────
+
+echo "🔍 [5/5] docs 간 상호 참조 검증..."
+
+for doc in docs/architecture/*.md docs/conventions/*.md docs/onboarding.md; do
+  if [ -f "$doc" ]; then
+    grep -oE '[a-zA-Z0-9_-]+\.md' "$doc" 2>/dev/null | sort -u | while read ref; do
+      # 자기 자신 제외
+      if [ "$(basename $doc)" = "$ref" ]; then
+        continue
+      fi
+      # docs/ 내에서 검색
+      found=$(find docs/ -name "$ref" 2>/dev/null | head -1)
+      if [ -z "$found" ]; then
+        # 프로젝트 루트에서도 검색 (CLAUDE.md 등)
+        if [ ! -f "$ref" ]; then
+          echo "   ⚠️ $(basename $doc)가 참조하지만 없는 문서: $ref"
+          WARNINGS=$((WARNINGS + 1))
+        fi
+      fi
+    done
+  fi
+done
+echo "   완료"
+
+# ─── 결과 ────
+
+echo ""
+echo "══════════════════════════════════"
+if [ "$ERRORS" -gt 0 ]; then
+  echo "  ❌ 에러: ${ERRORS}개 / 경고: ${WARNINGS}개"
+  echo "  문서와 코드가 동기화되지 않았습니다."
+  echo "══════════════════════════════════"
+  exit 1
+elif [ "$WARNINGS" -gt 0 ]; then
+  echo "  ⚠️ 경고: ${WARNINGS}개"
+  echo "  치명적이지 않지만 확인이 필요합니다."
+  echo "══════════════════════════════════"
+  exit 0
+else
+  echo "  ✅ 문서 동기화 검증 통과"
+  echo "══════════════════════════════════"
+  exit 0
+fi

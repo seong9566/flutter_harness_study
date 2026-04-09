@@ -1,0 +1,172 @@
+name: Auto Fix
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches-exclude: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-fix:
+    name: Auto Fix with Claude Code
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+
+    steps:
+      - name: Get PR info
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ci.yml',
+              status: 'failure',
+              per_page: 1
+            });
+
+            if (runs.data.workflow_runs.length === 0) {
+              core.setFailed('No failed runs found');
+              return;
+            }
+
+            const run = runs.data.workflow_runs[0];
+            const branch = run.head_branch;
+
+            // PR 찾기
+            const prs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open'
+            });
+
+            if (prs.data.length === 0) {
+              console.log('No open PR for this branch, skipping');
+              return;
+            }
+
+            core.setOutput('branch', branch);
+            core.setOutput('pr_number', prs.data[0].number);
+            core.setOutput('has_pr', 'true');
+
+      - name: Checkout
+        if: steps.pr-info.outputs.has_pr == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr-info.outputs.branch }}
+          fetch-depth: 0
+
+      - name: Setup Flutter
+        if: steps.pr-info.outputs.has_pr == 'true'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          cache: true
+
+      - name: Install dependencies
+        if: steps.pr-info.outputs.has_pr == 'true'
+        run: flutter pub get
+
+      - name: Identify failures
+        if: steps.pr-info.outputs.has_pr == 'true'
+        id: failures
+        run: |
+          ISSUES=""
+
+          # 1. dart format 문제 확인
+          FORMAT_OUTPUT=$(dart format --set-exit-if-changed --output=none . 2>&1 || true)
+          if echo "$FORMAT_OUTPUT" | grep -q "Changed"; then
+            ISSUES="${ISSUES}FORMAT_ISSUE "
+            echo "format_issue=true" >> $GITHUB_OUTPUT
+          fi
+
+          # 2. flutter analyze 문제 확인
+          ANALYZE_OUTPUT=$(flutter analyze --no-pub 2>&1 || true)
+          if echo "$ANALYZE_OUTPUT" | grep -q "error •\|error -"; then
+            ISSUES="${ISSUES}ANALYZE_ISSUE "
+            echo "analyze_issue=true" >> $GITHUB_OUTPUT
+            echo "$ANALYZE_OUTPUT" | grep "error" | head -20 > /tmp/analyze_errors.txt
+          fi
+
+          # 3. 테스트 실패 확인
+          TEST_OUTPUT=$(flutter test 2>&1 || true)
+          if echo "$TEST_OUTPUT" | grep -q "Some tests failed"; then
+            ISSUES="${ISSUES}TEST_ISSUE "
+            echo "test_issue=true" >> $GITHUB_OUTPUT
+            echo "$TEST_OUTPUT" | grep -A2 "FAILED\|Expected:\|Actual:" | head -30 > /tmp/test_errors.txt
+          fi
+
+          echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+
+      - name: Auto fix - Format
+        if: steps.failures.outputs.format_issue == 'true'
+        run: |
+          dart format .
+          echo "✅ dart format 자동 수정 완료"
+
+      - name: Auto fix - Build Runner
+        if: steps.failures.outputs.analyze_issue == 'true'
+        run: |
+          # 생성 파일 누락인 경우 build_runner 실행
+          dart run build_runner build --delete-conflicting-outputs 2>/dev/null || true
+          echo "✅ build_runner 실행 완료"
+
+      - name: Commit auto-fixes
+        if: steps.pr-info.outputs.has_pr == 'true'
+        run: |
+          git config user.name "claude-auto-fix"
+          git config user.email "claude-auto-fix@noreply.github.com"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "fix(ci): 자동 수정 — format 및 생성 파일 갱신"
+            git push
+            echo "auto_fixed=true" >> $GITHUB_ENV
+            echo "✅ 자동 수정 커밋 완료"
+          else
+            echo "auto_fixed=false" >> $GITHUB_ENV
+            echo "ℹ️ 자동 수정할 항목 없음"
+          fi
+
+      - name: Comment on PR
+        if: steps.pr-info.outputs.has_pr == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = ${{ steps.pr-info.outputs.pr_number }};
+            const autoFixed = '${{ env.auto_fixed }}' === 'true';
+            const formatIssue = '${{ steps.failures.outputs.format_issue }}' === 'true';
+            const analyzeIssue = '${{ steps.failures.outputs.analyze_issue }}' === 'true';
+            const testIssue = '${{ steps.failures.outputs.test_issue }}' === 'true';
+
+            let body = '## 🔧 Auto Fix Report\n\n';
+
+            if (autoFixed) {
+              body += '### ✅ 자동 수정 완료\n';
+              if (formatIssue) body += '- `dart format` 적용\n';
+              if (analyzeIssue) body += '- `build_runner` 재생성\n';
+              body += '\n자동 수정 커밋이 추가되었습니다. CI가 다시 실행됩니다.\n';
+            }
+
+            if (testIssue) {
+              body += '\n### ❌ 수동 수정 필요\n';
+              body += '- 테스트 실패가 있습니다. 자동 수정이 불가능하므로 직접 확인해주세요.\n';
+              body += '- `flutter test`로 실패한 테스트를 확인하세요.\n';
+            }
+
+            if (!autoFixed && !testIssue) {
+              body += '분석 결과 자동 수정할 항목이 없습니다. CI 로그를 직접 확인해주세요.\n';
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: body
+            });

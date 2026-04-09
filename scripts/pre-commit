@@ -1,0 +1,92 @@
+#!/bin/bash
+
+# Git Pre-Commit Hook
+# 설치: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# 또는: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+
+set -e
+
+echo "──────────────────────────────────"
+echo "  Pre-Commit Hook"
+echo "──────────────────────────────────"
+
+# 변경된 Dart 파일만 수집 (생성 파일 제외)
+STAGED_DART=$(git diff --cached --name-only --diff-filter=ACM | grep '\.dart$' | grep -v '\.g\.dart$\|\.freezed\.dart$\|\.gen\.dart$' || true)
+
+if [ -z "$STAGED_DART" ]; then
+  echo "✅ Dart 파일 변경 없음 — 스킵"
+  exit 0
+fi
+
+echo "📋 검사 대상: $(echo "$STAGED_DART" | wc -l | tr -d ' ')개 파일"
+echo ""
+
+# 1. dart format 검사
+echo "🔍 [1/3] dart format..."
+UNFORMATTED=$(dart format --set-exit-if-changed --output=none $STAGED_DART 2>&1 || true)
+if echo "$UNFORMATTED" | grep -q "Changed"; then
+  echo "❌ 포맷되지 않은 파일이 있습니다:"
+  echo "$UNFORMATTED" | grep "Changed"
+  echo ""
+  echo "💡 자동 수정: dart format ."
+  exit 1
+fi
+echo "   ✅ 포맷 통과"
+
+# 2. flutter analyze
+echo "🔍 [2/3] flutter analyze..."
+ANALYZE_OUTPUT=$(flutter analyze --no-pub 2>&1)
+if echo "$ANALYZE_OUTPUT" | grep -q "error •\|error -"; then
+  echo "❌ 정적 분석 에러:"
+  echo "$ANALYZE_OUTPUT" | grep "error" | head -10
+  exit 1
+fi
+echo "   ✅ 분석 통과"
+
+# 3. 금지 패턴 검사
+echo "🔍 [3/3] 금지 패턴 검사..."
+ERRORS=0
+
+# print() 사용
+PRINTS=$(echo "$STAGED_DART" | xargs grep -n "print(" 2>/dev/null | grep -v "// " || true)
+if [ -n "$PRINTS" ]; then
+  echo "   ❌ print() 사용 금지 — AppLogger를 사용하세요:"
+  echo "$PRINTS" | head -5
+  ERRORS=$((ERRORS + 1))
+fi
+
+# dynamic 타입
+DYNAMICS=$(echo "$STAGED_DART" | xargs grep -n "\bdynamic\b" 2>/dev/null | grep -v "// \|.g.dart\|.freezed.dart" || true)
+if [ -n "$DYNAMICS" ]; then
+  echo "   ❌ dynamic 타입 사용 금지:"
+  echo "$DYNAMICS" | head -5
+  ERRORS=$((ERRORS + 1))
+fi
+
+# presentation → data 직접 import
+LAYER_VIOLATIONS=$(echo "$STAGED_DART" | grep "presentation" | xargs grep -n "import.*data/" 2>/dev/null || true)
+if [ -n "$LAYER_VIOLATIONS" ]; then
+  echo "   ❌ presentation에서 data 직접 import 금지:"
+  echo "$LAYER_VIOLATIONS" | head -5
+  ERRORS=$((ERRORS + 1))
+fi
+
+# domain에서 Flutter import
+DOMAIN_FLUTTER=$(echo "$STAGED_DART" | grep "domain" | xargs grep -n "package:flutter\|dart:ui" 2>/dev/null || true)
+if [ -n "$DOMAIN_FLUTTER" ]; then
+  echo "   ❌ domain에서 Flutter import 금지:"
+  echo "$DOMAIN_FLUTTER" | head -5
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$ERRORS" -gt 0 ]; then
+  echo ""
+  echo "❌ 금지 패턴 $ERRORS개 발견"
+  exit 1
+fi
+echo "   ✅ 금지 패턴 없음"
+
+echo ""
+echo "──────────────────────────────────"
+echo "  ✅ Pre-Commit 통과"
+echo "──────────────────────────────────"
