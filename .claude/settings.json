@@ -27,7 +27,7 @@
           },
           {
             "type": "command",
-            "command": "bash -c 'CMD=$(jq -r \".tool_input.command\" <<< \"$(cat)\"); if echo \"$CMD\" | grep -qE \"^git commit\"; then MSG=$(echo \"$CMD\" | grep -oP \"(?<=-m\\s[\\'\\\"]).+?(?=[\\'\\\"]\"); if [ -n \"$MSG\" ]; then if ! echo \"$MSG\" | grep -qE \"^(feat|fix|refactor|docs|test|chore)\\(.+\\):\\s.+\"; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"커밋 메시지 형식 오류. type(scope): 설명 형식을 사용하세요. 예: fix(card): 카드 목록 정렬 오류 수정\\\"}\" && exit 2; fi; fi; fi; exit 0'"
+            "command": "bash -c 'CMD=$(jq -r \".tool_input.command\" <<< \"$(cat)\"); if echo \"$CMD\" | grep -qE \"^git commit\"; then if ! echo \"$CMD\" | grep -qE \"(feat|fix|refactor|docs|test|chore)\\(.+\\):\\s\"; then echo \"{\\\"decision\\\": \\\"block\\\", \\\"reason\\\": \\\"커밋 메시지 형식 오류. type(scope): 설명 형식을 사용하세요. 예: fix(card): 카드 목록 정렬 오류 수정\\\"}\" && exit 2; fi; fi; exit 0'"
           }
         ]
       }
